@@ -1,6 +1,5 @@
-pip 
-install 
-requests 
-beautifulsoup4 
-pandas 
-openpyxl
+streamlit
+requests
+beautifulsoup4
+pandas
+
