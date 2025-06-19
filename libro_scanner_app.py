@@ -1,71 +1,82 @@
-import streamlit as st
 import requests
 from bs4 import BeautifulSoup
-import pandas as pd
 import time
+import pandas as pd
 
-st.set_page_config(page_title="Radar de Libros", layout="wide")
-
-st.title("📚 Radar de Libros con Valoración Alta y Precio Bajo")
-
-st.markdown("Busca libros publicados desde 2020 con valoración alta (según OpenLibrary) y disponibles en Iberlibro por menos de un precio que tú elijas.")
-
-# Filtros de usuario
-año_min = st.slider("📆 Año de publicación mínimo", 2020, 2025, 2022)
-precio_max = st.slider("💰 Precio máximo (EUR)", 1.0, 10.0, 3.0, 0.5)
-limite_resultados = st.slider("🔍 Nº de libros a analizar (por año)", 10, 100, 30)
-
+BASE_GOODREADS = "https://www.goodreads.com"
 HEADERS = {"User-Agent": "Mozilla/5.0"}
-UMBRAL_ESTRELLAS = 4.0
+AÑOS = range(2020, 2025)
+PRECIO_MAX = 3.0
+PAGINAS_POR_AÑO = 2  # Puedes aumentar esto para más resultados
+UMBRAL_VALORACION = 4.0
 
-def obtener_libros_openlibrary(año, limite):
-    url = f"https://openlibrary.org/search.json?publish_year={año}&language=eng&limit={limite}"
-    r = requests.get(url)
-    return r.json().get("docs", [])
+def obtener_libros_goodreads(año):
+    libros = []
+    for pagina in range(1, PAGINAS_POR_AÑO + 1):
+        url = f"{BASE_GOODREADS}/book/popular_by_date/{año}?page={pagina}"
+        r = requests.get(url, headers=HEADERS)
+        soup = BeautifulSoup(r.text, "html.parser")
+        contenedores = soup.select("div.leftContainer div.bookBox")
 
-def buscar_en_iberlibro(titulo, autor):
-    query = f"{titulo} {autor}".replace(" ", "+")
-    url = f"https://www.iberlibro.com/servlet/SearchResults?kn={query}&sortby=17"
-    r = requests.get(url, headers=HEADERS)
-    soup = BeautifulSoup(r.text, "html.parser")
-    precios = soup.find_all("span", class_="item-price")
-    for p in precios:
-        texto = p.get_text(strip=True)
-        if "€" in texto:
+        if not contenedores:
+            contenedores = soup.select("tr")  # fallback para diseño viejo
+
+        for cont in contenedores:
             try:
-                valor = float(texto.replace("€", "").replace(",", "."))
-                if valor <= precio_max:
-                    return valor, url
+                titulo = cont.find("a", class_="bookTitle").get_text(strip=True)
+                autor = cont.find("a", class_="authorName").get_text(strip=True)
+                valoracion = float(cont.select_one(".minirating").get_text().split("avg rating")[1].split()[0])
+                enlace = BASE_GOODREADS + cont.find("a", class_="bookTitle")["href"]
+                if valoracion >= UMBRAL_VALORACION:
+                    libros.append({"titulo": titulo, "autor": autor, "valoracion": valoracion, "enlace": enlace, "año": año})
             except:
                 continue
+        time.sleep(2)
+    return libros
+
+def buscar_precio_iberlibro(titulo, autor):
+    query = f"{titulo} {autor}".replace(" ", "+")
+    url = f"https://www.iberlibro.com/servlet/SearchResults?kn={query}&sortby=17"
+    try:
+        r = requests.get(url, headers=HEADERS, timeout=10)
+        soup = BeautifulSoup(r.text, "html.parser")
+        precios = soup.find_all("span", class_="item-price")
+        for p in precios:
+            texto = p.get_text(strip=True)
+            if "€" in texto:
+                valor = float(texto.replace("€", "").replace(",", "."))
+                if valor <= PRECIO_MAX:
+                    return valor, url
+    except:
+        pass
     return None, None
 
-resultados = []
-with st.spinner("🔎 Buscando gangas literarias..."):
-    for año in range(año_min, 2025):
-        libros = obtener_libros_openlibrary(año, limite_resultados)
+def main():
+    resultados = []
+    for año in AÑOS:
+        print(f"📘 Buscando libros de {año}...")
+        libros = obtener_libros_goodreads(año)
         for libro in libros:
-            titulo = libro.get("title")
-            autor = libro.get("author_name", [""])[0]
-            if not titulo or not autor:
-                continue
-            precio, enlace = buscar_en_iberlibro(titulo, autor)
+            precio, enlace_iberlibro = buscar_precio_iberlibro(libro["titulo"], libro["autor"])
             if precio:
                 resultados.append({
-                    "📘 Título": titulo,
-                    "✍️ Autor": autor,
-                    "📆 Año": año,
-                    "💵 Precio (€)": precio,
-                    "🔗 Enlace": enlace
+                    "Título": libro["titulo"],
+                    "Autor": libro["autor"],
+                    "Año": libro["año"],
+                    "Valoración": libro["valoracion"],
+                    "Precio (€)": precio,
+                    "Link Goodreads": libro["enlace"],
+                    "Link Iberlibro": enlace_iberlibro
                 })
             time.sleep(1.5)
 
-if resultados:
-    df = pd.DataFrame(resultados)
-    st.success(f"✅ Se encontraron {len(resultados)} libros que cumplen los criterios")
-    st.dataframe(df, use_container_width=True)
+    if resultados:
+        df = pd.DataFrame(resultados)
+        df.to_excel("libros_encontrados.xlsx", index=False)
+        print(f"\n✅ ¡Hecho! Se encontraron {len(resultados)} libros. Archivo guardado como 'libros_encontrados.xlsx'")
+    else:
+        print("❌ No se encontraron libros que cumplan todos los criterios.")
 
-    csv = df.to_csv(index=False).encode('utf-8')
-    st.download_button("📥 Descargar en CSV", data=csv, file_name='libros_baratos.csv', mime='text/csv')
-else:
-    st.warning("No se encontraron resultados que coincidan. ¡Prueba con un precio mayor o más años!")
+if __name__ == "__main__":
+    main()
+
